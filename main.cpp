@@ -28,7 +28,7 @@ using namespace std::chrono;
 // --- Configuration ---
 constexpr int BUTTON_PIN = 23;
 constexpr int SCREEN_PIN = 24;
-constexpr int LED_PIN = 47;
+constexpr int LED_PIN = 12;
 // constexpr int WIDTH = 2312;
 // constexpr int HEIGHT = 1736;
 // constexpr int WIDTH = 3600;
@@ -84,9 +84,16 @@ void runCommand(const std::string &cmd) {
     std::system(cmd.c_str());
 }
 
+void setLedPin(bool high) {
+    runCommand("raspi-gpio set " + std::to_string(LED_PIN) + (high ? " dh" : " dl"));
+}
+
+
 void turnOffScreen() {
     runCommand("raspi-gpio set 24 op");
     runCommand("raspi-gpio set 24 dl");
+    runCommand("raspi-gpio set " + std::to_string(LED_PIN) + " op");
+    setLedPin(false);
 }
 
 void triggerLed() {
@@ -161,6 +168,9 @@ void encoderThreadFunc() {
                 fwrite(jpegBuf, 1, jpegSize, outfile);
                 fclose(outfile);
                 std::cout << "Saved: " << job.path << " (" << jpegSize / 1024 << " KB)" << std::endl;
+                setLedPin(true);
+                std::this_thread::sleep_for(milliseconds(30));
+                setLedPin(false);
             } else {
                 std::cerr << "Failed to open output file: " << job.path << std::endl;
             }

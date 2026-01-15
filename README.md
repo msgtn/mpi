@@ -46,3 +46,7 @@ The application will:
   - Exposure time: 1/30s
   - Analogue gain: 4.0
   - Auto-exposure disabled
+
+## TODO
+- [ ] implement shutter speed selection
+- [ ] startup service
