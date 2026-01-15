@@ -1,12 +1,14 @@
 import asyncio
-import os
 import logging
-from picamera2 import Picamera2
-from libcamera import controls
-from gpiozero import Button, LED
-import time
-from time import sleep
+import os
 import subprocess
+import time
+from pprint import *
+from time import sleep
+
+from gpiozero import LED, Button
+from libcamera import controls
+from picamera2 import Picamera2
 
 # Turn off screen
 subprocess.call(["raspi-gpio", "set", "24", "op"])
@@ -26,8 +28,6 @@ def capture_image():
     path = os.path.join(TAPES_DIR, filename)
     cam.capture_file(path)
     logging.info(f"Captured image: {path}")
-
-
 
 
 def set_shutter_speed(speed: int):
@@ -60,14 +60,35 @@ def on_button_press():
 Picamera2.set_logging(Picamera2.DEBUG)
 cam = Picamera2()
 RESOLUTION = (2400, 1800)
+RESOLUTION = (2312, 1736)
 # RESOLUTION = (4624, 3472)
 # RESOLUTION = (2828, 2120)
 STILL_CONFIG_DICT = {
     "size": RESOLUTION,
 }
-still_config = cam.create_still_configuration(*[STILL_CONFIG_DICT] * 3, buffer_count=2, queue=False)
+still_config = cam.create_still_configuration(
+    main=STILL_CONFIG_DICT,
+    raw=STILL_CONFIG_DICT,
+    # buffer_count=2,
+    buffer_count=4,
+    queue=False,
+)
 cam.still_configuration.size = RESOLUTION
 cam.configure(still_config)
+
+cam.set_controls(
+    {
+        "AfMode": controls.AfModeEnum.Manual,
+        "AeEnable": False,
+        "AeFlickerMode": controls.AeFlickerModeEnum.Off,
+        "ExposureTime": int(1e6 / 30),
+        # "AnalogueGain":1.0,
+        "AnalogueGain": 4.0,
+        # https://docs.arducam.com/Raspberry-Pi-Camera/Native-camera/64MP-OV64A40/#frame-rate-resolution
+        "FrameRate": 25,
+    }
+)
+# pprint(cam.sensor_modes)
 cam.start("still", show_preview=False)
 set_shutter_speed(1e6 / 30)
 
@@ -79,18 +100,24 @@ cam.set_controls(
         "ExposureTime": int(1e6 / 30),
         # "AnalogueGain":1.0,
         "AnalogueGain": 4.0,
+        "FrameRate": 50,
     }
 )
 
 button.when_pressed = on_button_press
 
+
 def capture_buffer():
     global still_config
-    (buffer,), metadata = Picamera2.capture_buffers(["main"])
-    img = Picamera2.helpers.make_image(buffer, still_config["main"])
+    global cam
+
+    (buffer,), metadata = cam.capture_buffers(["main"])
+    img = cam.helpers.make_image(buffer, still_config["main"])
     filename = f"picam_{get_file_number(TAPES_DIR)}.jpg"
     path = os.path.join(TAPES_DIR, filename)
-    Picamera2.helpers.save(img, metadata, path)
+    cam.helpers.save(img, metadata, path)
+    print(f"{path=}")
+
 
 logging.info("Camera and button initialized. Waiting for button press...")
 
