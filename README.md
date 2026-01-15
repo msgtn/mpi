@@ -49,4 +49,5 @@ The application will:
 
 ## TODO
 - [ ] implement shutter speed selection
-- [ ] startup service
+- [ ] startup service, and maybe another process to kill/restart manually with a jumper to one of the currently unused pins
+- [ ] design and print focus tab
