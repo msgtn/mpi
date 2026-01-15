@@ -29,8 +29,12 @@ using namespace std::chrono;
 constexpr int BUTTON_PIN = 23;
 constexpr int SCREEN_PIN = 24;
 constexpr int LED_PIN = 47;
-constexpr int WIDTH = 2312;
-constexpr int HEIGHT = 1736;
+// constexpr int WIDTH = 2312;
+// constexpr int HEIGHT = 1736;
+// constexpr int WIDTH = 3600;
+// constexpr int HEIGHT = 2400;
+constexpr int WIDTH = 4624;
+constexpr int HEIGHT = 3472;
 constexpr int JPEG_QUALITY = 90;
 const std::string TAPES_DIR = std::string(getenv("HOME")) + "/tapes";
 
@@ -293,7 +297,7 @@ bool setupCamera() {
     StreamConfiguration &streamConfig = config->at(0);
     streamConfig.size.width = WIDTH;
     streamConfig.size.height = HEIGHT;
-    streamConfig.bufferCount = 4;
+    streamConfig.bufferCount = 1;
 
     if (config->validate() == CameraConfiguration::Invalid) {
         std::cerr << "Invalid camera configuration" << std::endl;
