@@ -20,6 +20,7 @@
 #include <libcamera/libcamera.h>
 #include <gpiod.h>
 #include <turbojpeg.h>
+#include <exiv2/exiv2.hpp>
 
 namespace fs = std::filesystem;
 using namespace libcamera;
@@ -59,6 +60,10 @@ struct CaptureJob {
     size_t plane0Offset;
     size_t plane1Offset;
     size_t plane2Offset;
+    // EXIF metadata
+    int32_t exposureTimeUs;
+    float analogueGain;
+    std::string timestamp;
 };
 
 // --- Global state ---
@@ -93,6 +98,16 @@ std::string getTimestamp() {
     return oss.str();
 }
 
+std::string getExifTimestamp() {
+    auto now = std::chrono::system_clock::now();
+    auto time = std::chrono::system_clock::to_time_t(now);
+    std::tm tm = *std::localtime(&time);
+
+    std::ostringstream oss;
+    oss << std::put_time(&tm, "%Y:%m:%d %H:%M:%S");
+    return oss.str();
+}
+
 void runCommand(const std::string &cmd) {
     std::system(cmd.c_str());
 }
@@ -114,9 +129,6 @@ void turnOffScreen() {
     setLedPin(false);
 }
 
-void triggerLed() {
-    runCommand("raspi-gpio set 47 dh");
-}
 
 void setExposureTime(int buttonPin) {
     int32_t exposureTime;
@@ -175,6 +187,41 @@ void cycleAnalogueGain() {
     }
 
     std::cout << "Gain set to " << gain << std::endl;
+}
+
+void writeExifMetadata(const std::string& filepath, const CaptureJob& job) {
+    try {
+        auto image = Exiv2::ImageFactory::open(filepath);
+        if (!image.get()) {
+            std::cerr << "Failed to open image for EXIF: " << filepath << std::endl;
+            return;
+        }
+
+        image->readMetadata();
+        Exiv2::ExifData& exifData = image->exifData();
+
+        // Dimensions
+        exifData["Exif.Photo.PixelXDimension"] = static_cast<uint32_t>(job.width);
+        exifData["Exif.Photo.PixelYDimension"] = static_cast<uint32_t>(job.height);
+
+        // Exposure time (microseconds -> rational seconds)
+        exifData["Exif.Photo.ExposureTime"] = Exiv2::URational(job.exposureTimeUs, 1000000);
+
+        // ISO = gain * 100
+        exifData["Exif.Photo.ISOSpeedRatings"] = static_cast<uint16_t>(job.analogueGain * 100);
+
+        // Timestamps
+        exifData["Exif.Photo.DateTimeOriginal"] = job.timestamp;
+        exifData["Exif.Photo.DateTimeDigitized"] = job.timestamp;
+
+        // Camera identification
+        exifData["Exif.Image.Make"] = "Raspberry Pi";
+        exifData["Exif.Image.Model"] = "MPI Camera";
+
+        image->writeMetadata();
+    } catch (const Exiv2::Error& e) {
+        std::cerr << "EXIF error: " << e.what() << std::endl;
+    }
 }
 
 // --- Encoder thread function ---
@@ -245,6 +292,7 @@ void encoderThreadFunc() {
                 fwrite(jpegBuf, 1, jpegSize, outfile);
                 fclose(outfile);
                 std::cout << "Saved: " << job.path << " (" << jpegSize / 1024 << " KB)" << std::endl;
+                writeExifMetadata(job.path, job);
                 setLedPin(true);
                 std::this_thread::sleep_for(milliseconds(30));
                 setLedPin(false);
@@ -333,6 +381,9 @@ static void requestComplete(Request *request) {
             job.yStride = yStride;
             job.uvStride = yStride / 2;
             job.path = TAPES_DIR + "/mpi_" + getTimestamp() + ".jpg";
+            job.exposureTimeUs = currentExposureTime.load();
+            job.analogueGain = GAIN_VALUES[currentGainIndex.load()];
+            job.timestamp = getExifTimestamp();
             job.numPlanes = planes.size();
             job.yuvData.resize(totalSize);
             std::memcpy(job.yuvData.data(), mappedBuffer, totalSize);
@@ -357,7 +408,6 @@ static void requestComplete(Request *request) {
             }
             captureCV.notify_one();
 
-            triggerLed();
         }
     }
 

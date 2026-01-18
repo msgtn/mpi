@@ -8,7 +8,7 @@ Install the required libraries on your Raspberry Pi:
 
 ```bash
 sudo apt update
-sudo apt install -y cmake build-essential libcamera-dev libgpiod-dev libjpeg-dev libturbojpeg0-dev
+sudo apt install -y cmake build-essential libcamera-dev libgpiod-dev libjpeg-dev libturbojpeg0-dev libexiv2-dev
 ```
 
 ## Build

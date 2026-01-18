@@ -15,6 +15,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBCAMERA REQUIRED libcamera)
 pkg_check_modules(LIBGPIOD REQUIRED libgpiod)
 pkg_check_modules(TURBOJPEG REQUIRED libturbojpeg)
+pkg_check_modules(EXIV2 REQUIRED exiv2)
 
 add_executable(picam-capture main.cpp)
 
@@ -22,12 +23,14 @@ target_include_directories(picam-capture PRIVATE
     ${LIBCAMERA_INCLUDE_DIRS}
     ${LIBGPIOD_INCLUDE_DIRS}
     ${TURBOJPEG_INCLUDE_DIRS}
+    ${EXIV2_INCLUDE_DIRS}
 )
 
 target_link_libraries(picam-capture
     ${LIBCAMERA_LIBRARIES}
     ${LIBGPIOD_LIBRARIES}
     ${TURBOJPEG_LIBRARIES}
+    ${EXIV2_LIBRARIES}
 )
 
 target_compile_options(picam-capture PRIVATE
