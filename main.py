@@ -39,6 +39,41 @@ def set_shutter_speed(speed: int):
 BUTTON_PIN = 23  # Change as needed
 button = Button(BUTTON_PIN)
 
+# Exposure time buttons: pin -> exposure time in microseconds
+EXPOSURE_PIN_MAP = {
+    19: int(1e6 / 1000),  # 1/1000 second
+    5: int(1e6 / 250),    # 1/250 second
+    6: int(1e6 / 60),     # 1/60 second
+    26: int(1e6 / 15),    # 1/15 second
+}
+
+exposure_buttons = {}
+
+
+def setExposureTime(pin: int):
+    """Set exposure time based on button pin number."""
+    if pin not in EXPOSURE_PIN_MAP:
+        logging.warning(f"Unknown exposure pin: {pin}")
+        return
+    exposure_us = EXPOSURE_PIN_MAP[pin]
+    logging.info(f"Pin {pin} pressed: setting exposure to {exposure_us} µs (1/{int(1e6/exposure_us)}s)")
+    set_shutter_speed(exposure_us)
+
+
+def make_exposure_handler(pin: int):
+    """Create a button handler for a specific exposure pin."""
+    def handler():
+        setExposureTime(pin)
+    return handler
+
+
+# Set up exposure buttons
+for pin in EXPOSURE_PIN_MAP:
+    btn = Button(pin)
+    btn.when_pressed = make_exposure_handler(pin)
+    exposure_buttons[pin] = btn
+    logging.info(f"Exposure button on pin {pin} -> 1/{int(1e6/EXPOSURE_PIN_MAP[pin])}s")
+
 
 LAST_PRESSED = time.time()
 

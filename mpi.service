@@ -1,0 +1,16 @@
+[Unit]
+Description=PiCam Capture Service
+After=multi-user.target
+
+[Service]
+Type=simple
+User=dummy
+WorkingDirectory=/home/dummy/mpi/build
+ExecStart=/home/dummy/mpi/build/picam-capture
+Restart=on-failure
+RestartSec=5
+Environment="LIBCAMERA_LOG_LEVELS=V4L2:FATAL"
+
+[Install]
+WantedBy=multi-user.target
+
