@@ -48,6 +48,7 @@ The application will:
   - Auto-exposure disabled
 
 ## TODO
-- [ ] implement shutter speed selection
-- [ ] startup service, and maybe another process to kill/restart manually with a jumper to one of the currently unused pins
-- [ ] design and print focus tab
+- [x] implement shutter speed selection
+- [x] startup service, and maybe another process to kill/restart manually with a jumper to one of the currently unused pins
+- [x] design and print focus tab
+- [ ] retest with flash
