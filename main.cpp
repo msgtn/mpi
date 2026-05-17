@@ -16,11 +16,20 @@
 #include <mutex>
 #include <condition_variable>
 #include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <libcamera/libcamera.h>
 #include <gpiod.h>
 #include <turbojpeg.h>
 #include <exiv2/exiv2.hpp>
+
+// LCD HAT library (C headers)
+extern "C" {
+#include "DEV_Config.h"
+#include "LCD_1in3.h"
+#include "GUI_Paint.h"
+}
 
 namespace fs = std::filesystem;
 using namespace libcamera;
@@ -37,7 +46,9 @@ constexpr int EXPOSURE_PIN_250 = 5;    // 1/250 sec
 constexpr int EXPOSURE_PIN_60 = 6;     // 1/60 sec
 constexpr int EXPOSURE_PIN_15 = 26;    // 1/15 sec
 
-// Gain control pin
+// Show recent photo pin
+constexpr int SHOW_PHOTO_PIN = 16;
+// Gain cycle pin
 constexpr int GAIN_PIN = 20;
 // constexpr int WIDTH = 2312;
 // constexpr int HEIGHT = 1736;
@@ -47,6 +58,7 @@ constexpr int WIDTH = 4624;
 constexpr int HEIGHT = 3472;
 constexpr int JPEG_QUALITY = 90;
 const std::string TAPES_DIR = std::string(getenv("HOME")) + "/tapes";
+const std::string SHUTTER_CACHE_FILE = std::string(getenv("HOME")) + "/.mpi_shutter_speed";
 
 // --- Capture job for async encoding ---
 struct CaptureJob {
@@ -75,7 +87,7 @@ static std::vector<std::unique_ptr<Request>> requests;
 static std::atomic<bool> running{true};
 static std::atomic<time_point<steady_clock>> lastPressed{steady_clock::now() - seconds(2)};
 static std::atomic<int> captureCountdown{0};  // Frames to skip before capturing
-static std::atomic<int32_t> currentExposureTime{static_cast<int32_t>(1e6 / 30)};  // Default 1/30 sec
+static std::atomic<int32_t> currentExposureTime{static_cast<int32_t>(1e6 / 60)};  // Default 1/60 sec
 static std::atomic<int> currentGainIndex{1};  // Index into gains array (0=2.0, 1=4.0, 2=8.0)
 static constexpr float GAIN_VALUES[] = {2.0f, 4.0f, 8.0f};
 static std::atomic<time_point<steady_clock>> lastFrameTime{steady_clock::now()};  // Watchdog timer
@@ -112,6 +124,25 @@ void runCommand(const std::string &cmd) {
     std::system(cmd.c_str());
 }
 
+void saveShutterSpeed(int32_t exposureTimeUs) {
+    FILE* f = fopen(SHUTTER_CACHE_FILE.c_str(), "w");
+    if (f) {
+        fprintf(f, "%d\n", exposureTimeUs);
+        fclose(f);
+    }
+}
+
+int32_t loadShutterSpeed() {
+    constexpr int32_t defaultSpeed = static_cast<int32_t>(1e6 / 60);
+    FILE* f = fopen(SHUTTER_CACHE_FILE.c_str(), "r");
+    if (!f) return defaultSpeed;
+    int32_t val = 0;
+    if (fscanf(f, "%d", &val) != 1 || val <= 0) val = defaultSpeed;
+    fclose(f);
+    std::cout << "Loading shutter speed " << val << " us" << std::endl;
+    return val;
+}
+
 void setLedPin(bool high) {
     runCommand("raspi-gpio set " + std::to_string(LED_PIN) + (high ? " dh" : " dl"));
 }
@@ -121,11 +152,13 @@ void turnOffScreen() {
     runCommand("raspi-gpio set 24 op");
     runCommand("raspi-gpio set 24 dl");
     runCommand("raspi-gpio set " + std::to_string(LED_PIN) + " op");
-    runCommand("raspi-gpio set " + std::to_string(GAIN_PIN) + " ip");
-    runCommand("raspi-gpio set " + std::to_string(EXPOSURE_PIN_1000) + " ip");
-    runCommand("raspi-gpio set " + std::to_string(EXPOSURE_PIN_250) + " ip");
-    runCommand("raspi-gpio set " + std::to_string(EXPOSURE_PIN_60) + " ip");
-    runCommand("raspi-gpio set " + std::to_string(EXPOSURE_PIN_15) + " ip");
+    runCommand("raspi-gpio set " + std::to_string(BUTTON_PIN) + " ip pu");
+    runCommand("raspi-gpio set " + std::to_string(SHOW_PHOTO_PIN) + " ip pu");
+    runCommand("raspi-gpio set " + std::to_string(EXPOSURE_PIN_1000) + " ip pu");
+    runCommand("raspi-gpio set " + std::to_string(EXPOSURE_PIN_250) + " ip pu");
+    runCommand("raspi-gpio set " + std::to_string(EXPOSURE_PIN_60) + " ip pu");
+    runCommand("raspi-gpio set " + std::to_string(EXPOSURE_PIN_15) + " ip pu");
+    runCommand("raspi-gpio set " + std::to_string(GAIN_PIN) + " ip pu");
     setLedPin(false);
 }
 
@@ -168,6 +201,7 @@ void setExposureTime(int buttonPin) {
         std::this_thread::sleep_for(milliseconds(300));
     }
     currentExposureTime.store(exposureTime);
+    saveShutterSpeed(exposureTime);
     std::cout << "Exposure set to " << speedName << " sec (" << exposureTime << " us)" << std::endl;
 }
 
@@ -187,6 +221,140 @@ void cycleAnalogueGain() {
     }
 
     std::cout << "Gain set to " << gain << std::endl;
+}
+
+void showMostRecentPhoto() {
+    // Find the most recent .jpg file in TAPES_DIR
+    std::string mostRecent;
+    std::filesystem::file_time_type mostRecentTime;
+    bool found = false;
+
+    try {
+        for (const auto& entry : fs::directory_iterator(TAPES_DIR)) {
+            if (entry.is_regular_file() && entry.path().extension() == ".jpg") {
+                auto writeTime = entry.last_write_time();
+                if (!found || writeTime > mostRecentTime) {
+                    mostRecentTime = writeTime;
+                    mostRecent = entry.path().string();
+                    found = true;
+                }
+            }
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Error scanning tapes directory: " << e.what() << std::endl;
+        return;
+    }
+
+    if (!found) {
+        std::cout << "No photos found in " << TAPES_DIR << std::endl;
+        return;
+    }
+
+    std::cout << "Showing: " << mostRecent << std::endl;
+
+    // Read JPEG file
+    FILE* jpegFile = fopen(mostRecent.c_str(), "rb");
+    if (!jpegFile) {
+        std::cerr << "Failed to open JPEG file" << std::endl;
+        return;
+    }
+
+    fseek(jpegFile, 0, SEEK_END);
+    long jpegSize = ftell(jpegFile);
+    fseek(jpegFile, 0, SEEK_SET);
+
+    std::vector<unsigned char> jpegBuf(jpegSize);
+    fread(jpegBuf.data(), 1, jpegSize, jpegFile);
+    fclose(jpegFile);
+
+    // Decode JPEG
+    tjhandle tjDecompressor = tjInitDecompress();
+    if (!tjDecompressor) {
+        std::cerr << "Failed to init turbojpeg decompressor" << std::endl;
+        return;
+    }
+
+    int imgWidth, imgHeight, jpegSubsamp, jpegColorspace;
+    if (tjDecompressHeader3(tjDecompressor, jpegBuf.data(), jpegSize,
+                            &imgWidth, &imgHeight, &jpegSubsamp, &jpegColorspace) < 0) {
+        std::cerr << "Failed to read JPEG header: " << tjGetErrorStr2(tjDecompressor) << std::endl;
+        tjDestroy(tjDecompressor);
+        return;
+    }
+
+    // Decode to RGB
+    std::vector<unsigned char> rgbBuf(imgWidth * imgHeight * 3);
+    if (tjDecompress2(tjDecompressor, jpegBuf.data(), jpegSize,
+                      rgbBuf.data(), imgWidth, 0, imgHeight, TJPF_RGB, TJFLAG_FASTDCT) < 0) {
+        std::cerr << "Failed to decompress JPEG: " << tjGetErrorStr2(tjDecompressor) << std::endl;
+        tjDestroy(tjDecompressor);
+        return;
+    }
+    tjDestroy(tjDecompressor);
+
+    // Initialize LCD module
+    if (DEV_ModuleInit() != 0) {
+        std::cerr << "Failed to init LCD module" << std::endl;
+        return;
+    }
+
+    // Turn on screen backlight (pin 24)
+    runCommand("raspi-gpio set 24 op dh");
+
+    // Initialize LCD
+    LCD_1IN3_Init(HORIZONTAL);
+    LCD_1IN3_Clear(BLACK);
+    LCD_SetBacklight(1023);
+
+    // Allocate LCD image buffer
+    UWORD* lcdImage = (UWORD*)malloc(LCD_1IN3_WIDTH * LCD_1IN3_HEIGHT * sizeof(UWORD));
+    if (!lcdImage) {
+        std::cerr << "Failed to allocate LCD buffer" << std::endl;
+        DEV_ModuleExit();
+        return;
+    }
+
+    Paint_NewImage(lcdImage, LCD_1IN3_WIDTH, LCD_1IN3_HEIGHT, 0, BLACK, 16);
+    Paint_Clear(BLACK);
+
+    // Scale image to fit 240x240 (center crop to square, then scale)
+    int srcSize = std::min(imgWidth, imgHeight);
+    int srcX = (imgWidth - srcSize) / 2;
+    int srcY = (imgHeight - srcSize) / 2;
+
+    // Simple nearest-neighbor scaling to 240x240 with 90° clockwise rotation
+    for (int y = 0; y < LCD_1IN3_HEIGHT; y++) {
+        for (int x = 0; x < LCD_1IN3_WIDTH; x++) {
+            // 90° clockwise: sample from (y, height-1-x) in scaled space
+            int srcPx = srcX + (y * srcSize) / LCD_1IN3_HEIGHT;
+            int srcPy = srcY + ((LCD_1IN3_WIDTH - 1 - x) * srcSize) / LCD_1IN3_WIDTH;
+            int srcIdx = (srcPy * imgWidth + srcPx) * 3;
+
+            unsigned char r = rgbBuf[srcIdx];
+            unsigned char g = rgbBuf[srcIdx + 1];
+            unsigned char b = rgbBuf[srcIdx + 2];
+
+            // Convert to RGB565
+            UWORD color = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+            Paint_SetPixel(x, y, color);
+        }
+    }
+
+    // Display on LCD
+    LCD_1IN3_Display(lcdImage);
+
+    // Wait 2 seconds
+    DEV_Delay_ms(2000);
+
+    // Clear and turn off
+    LCD_1IN3_Clear(BLACK);
+    LCD_SetBacklight(0);
+
+    free(lcdImage);
+    DEV_ModuleExit();
+
+    // Turn off screen backlight
+    runCommand("raspi-gpio set 24 op dl");
 }
 
 void writeExifMetadata(const std::string& filepath, const CaptureJob& job) {
@@ -512,7 +680,7 @@ bool setupCamera() {
     // Set up initial controls
     ControlList startControls;
     startControls.set(controls::AeEnable, false);
-    startControls.set(controls::ExposureTime, static_cast<int32_t>(1e6 / 30));
+    startControls.set(controls::ExposureTime, currentExposureTime.load());
     startControls.set(controls::AnalogueGain, 4.0f);
 
     if (camera->start(&startControls)) {
@@ -523,7 +691,7 @@ bool setupCamera() {
     // Queue all requests with controls
     for (auto &request : requests) {
         request->controls().set(controls::AeEnable, false);
-        request->controls().set(controls::ExposureTime, static_cast<int32_t>(1e6 / 30));
+        request->controls().set(controls::ExposureTime, currentExposureTime.load());
         request->controls().set(controls::AnalogueGain, 4.0f);
         camera->queueRequest(request.get());
     }
@@ -552,7 +720,7 @@ void buttonThread() {
     }
 
     // All pins to monitor
-    const int pins[] = {BUTTON_PIN, EXPOSURE_PIN_1000, EXPOSURE_PIN_250, EXPOSURE_PIN_60, EXPOSURE_PIN_15, GAIN_PIN};
+    const int pins[] = {BUTTON_PIN, EXPOSURE_PIN_1000, EXPOSURE_PIN_250, EXPOSURE_PIN_60, EXPOSURE_PIN_15, SHOW_PHOTO_PIN, GAIN_PIN};
     const int numPins = sizeof(pins) / sizeof(pins[0]);
     struct gpiod_line *lines[numPins];
     struct gpiod_line_bulk bulk;
@@ -585,7 +753,7 @@ void buttonThread() {
     std::cout << "Button monitoring started on GPIOs: " << BUTTON_PIN
               << ", " << EXPOSURE_PIN_1000 << ", " << EXPOSURE_PIN_250
               << ", " << EXPOSURE_PIN_60 << ", " << EXPOSURE_PIN_15
-              << ", " << GAIN_PIN << std::endl;
+              << ", " << SHOW_PHOTO_PIN << ", " << GAIN_PIN << std::endl;
 
     while (running) {
         struct gpiod_line_bulk eventBulk;
@@ -624,6 +792,15 @@ void buttonThread() {
                             std::cout << "Button pressed, capturing..." << std::endl;
                             captureCountdown.store(3);
                         }
+                    } else if (pin == SHOW_PHOTO_PIN) {
+                        showMostRecentPhoto();
+                        // Drain any queued events on this line (non-blocking)
+                        int fd = gpiod_line_event_get_fd(line);
+                        int flags = fcntl(fd, F_GETFL);
+                        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+                        struct gpiod_line_event drainEvent;
+                        while (read(fd, &drainEvent, sizeof(drainEvent)) > 0) {}
+                        fcntl(fd, F_SETFL, flags);
                     // } else if (pin == GAIN_PIN) {
                     //     cycleAnalogueGain();
                     } else {
@@ -667,6 +844,10 @@ int main() {
     // Start encoder thread
     encoderThread = std::thread(encoderThreadFunc);
 
+    // Load cached shutter speed (defaults to 1/60 if not found)
+    currentExposureTime.store(loadShutterSpeed());
+    std::cout << "Shutter speed: " << currentExposureTime.load() << " us" << std::endl;
+
     // Setup camera
     if (!setupCamera()) {
         running = false;
@@ -687,6 +868,7 @@ int main() {
         auto timeSinceLastFrame = duration_cast<seconds>(steady_clock::now() - lastFrameTime.load()).count();
         if (timeSinceLastFrame > 5) {
             std::cerr << "Camera watchdog timeout - no frames for " << timeSinceLastFrame << " seconds, exiting..." << std::endl;
+            running = false;
             break;
         }
         std::this_thread::sleep_for(milliseconds(100));

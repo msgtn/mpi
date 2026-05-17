@@ -52,3 +52,4 @@ The application will:
 - [x] startup service, and maybe another process to kill/restart manually with a jumper to one of the currently unused pins
 - [x] design and print focus tab
 - [ ] retest with flash
+- [ ] cache last-set shutter speed so that rebooting the process does not reset to 1/30, short of hardware update to a constantly pollable interface like a potentioneter
