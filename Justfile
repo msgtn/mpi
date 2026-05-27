@@ -1,9 +1,7 @@
-host := "dummy@192.168.90.1"
-remote_dir := "/home/dummy/mpi"
 
 default: deploy
 
-setup:
+setup host:
     #!/usr/bin/env bash
     set -euo pipefail
     remote_user=$(ssh {{host}} whoami)
@@ -13,7 +11,7 @@ setup:
     ssh {{host}} "sudo systemctl daemon-reload && sudo systemctl enable mpi"
     echo "Service installed and enabled"
 
-deploy:
+deploy host remote_dir:
     #!/usr/bin/env bash
     set -euo pipefail
     rsync -av \

@@ -39,12 +39,13 @@ using namespace std::chrono;
 constexpr int BUTTON_PIN = 23;
 constexpr int SCREEN_PIN = 24;
 constexpr int LED_PIN = 12;
+constexpr int SHUTTER_PIN = 25;
 
 // Exposure control pins
-constexpr int EXPOSURE_PIN_1000 = 19;  // 1/1000 sec
-constexpr int EXPOSURE_PIN_250 = 5;    // 1/250 sec
-constexpr int EXPOSURE_PIN_60 = 6;     // 1/60 sec
-constexpr int EXPOSURE_PIN_15 = 26;    // 1/15 sec
+constexpr int EXPOSURE_PIN_250 = 19;  // 1/250 sec
+constexpr int EXPOSURE_PIN_60 = 5;    // 1/60 sec
+constexpr int EXPOSURE_PIN_15 = 6;     // 1/15 sec
+constexpr int EXPOSURE_PIN_2 = 26;    // 1/2 sec
 
 // Show recent photo pin
 constexpr int SHOW_PHOTO_PIN = 16;
@@ -147,17 +148,22 @@ void setLedPin(bool high) {
     runCommand("raspi-gpio set " + std::to_string(LED_PIN) + (high ? " dh" : " dl"));
 }
 
+void setShutterPin(bool high) {
+    runCommand("raspi-gpio set " + std::to_string(SHUTTER_PIN) + (high ? " dh" : " dl"));
+}
+
 
 void turnOffScreen() {
     runCommand("raspi-gpio set 24 op");
     runCommand("raspi-gpio set 24 dl");
+    runCommand("raspi-gpio set " + std::to_string(SHUTTER_PIN) + " op dh");
     runCommand("raspi-gpio set " + std::to_string(LED_PIN) + " op");
     runCommand("raspi-gpio set " + std::to_string(BUTTON_PIN) + " ip pu");
     runCommand("raspi-gpio set " + std::to_string(SHOW_PHOTO_PIN) + " ip pu");
-    runCommand("raspi-gpio set " + std::to_string(EXPOSURE_PIN_1000) + " ip pu");
     runCommand("raspi-gpio set " + std::to_string(EXPOSURE_PIN_250) + " ip pu");
     runCommand("raspi-gpio set " + std::to_string(EXPOSURE_PIN_60) + " ip pu");
     runCommand("raspi-gpio set " + std::to_string(EXPOSURE_PIN_15) + " ip pu");
+    runCommand("raspi-gpio set " + std::to_string(EXPOSURE_PIN_2) + " ip pu");
     runCommand("raspi-gpio set " + std::to_string(GAIN_PIN) + " ip pu");
     setLedPin(false);
 }
@@ -169,24 +175,24 @@ void setExposureTime(int buttonPin) {
     const char* speedName;
 
     switch (buttonPin) {
-        case EXPOSURE_PIN_1000:
-            exposureTime = static_cast<int32_t>(1e6 / 1000);
-            speedName = "1/1000";
-            nBlinks = 4;
-            break;
         case EXPOSURE_PIN_250:
             exposureTime = static_cast<int32_t>(1e6 / 250);
             speedName = "1/250";
-            nBlinks = 3;
+            nBlinks = 4;
             break;
         case EXPOSURE_PIN_60:
             exposureTime = static_cast<int32_t>(1e6 / 60);
             speedName = "1/60";
-            nBlinks = 2;
+            nBlinks = 3;
             break;
         case EXPOSURE_PIN_15:
             exposureTime = static_cast<int32_t>(1e6 / 15);
             speedName = "1/15";
+            nBlinks = 2;
+            break;
+        case EXPOSURE_PIN_2:
+            exposureTime = static_cast<int32_t>(1e6 / 2);
+            speedName = "1/2";
             nBlinks = 1;
             break;
         default:
@@ -494,7 +500,12 @@ static void requestComplete(Request *request) {
     // Countdown mechanism: skip frames to get a fresh, fully-exposed one
     int countdown = captureCountdown.load();
     if (countdown > 0) {
-        if (captureCountdown.fetch_sub(1) > 1) {
+        int prev = captureCountdown.fetch_sub(1);
+        if (prev > 1) {
+            if (prev == 2) {
+                // Next frame is the capture frame — fire flash now
+                setShutterPin(false);
+            }
             // Still counting down, skip this frame
             request->reuse(Request::ReuseBuffers);
             camera->queueRequest(request);
@@ -555,6 +566,7 @@ static void requestComplete(Request *request) {
             job.numPlanes = planes.size();
             job.yuvData.resize(totalSize);
             std::memcpy(job.yuvData.data(), mappedBuffer, totalSize);
+            setShutterPin(true);
 
             // Set plane offsets
             job.plane0Offset = planes[0].offset;
@@ -720,7 +732,7 @@ void buttonThread() {
     }
 
     // All pins to monitor
-    const int pins[] = {BUTTON_PIN, EXPOSURE_PIN_1000, EXPOSURE_PIN_250, EXPOSURE_PIN_60, EXPOSURE_PIN_15, SHOW_PHOTO_PIN, GAIN_PIN};
+    const int pins[] = {BUTTON_PIN, EXPOSURE_PIN_250, EXPOSURE_PIN_60, EXPOSURE_PIN_15, EXPOSURE_PIN_2, SHOW_PHOTO_PIN, GAIN_PIN};
     const int numPins = sizeof(pins) / sizeof(pins[0]);
     struct gpiod_line *lines[numPins];
     struct gpiod_line_bulk bulk;
@@ -751,8 +763,8 @@ void buttonThread() {
     }
 
     std::cout << "Button monitoring started on GPIOs: " << BUTTON_PIN
-              << ", " << EXPOSURE_PIN_1000 << ", " << EXPOSURE_PIN_250
-              << ", " << EXPOSURE_PIN_60 << ", " << EXPOSURE_PIN_15
+              << ", " << EXPOSURE_PIN_250 << ", " << EXPOSURE_PIN_60
+              << ", " << EXPOSURE_PIN_15 << ", " << EXPOSURE_PIN_2
               << ", " << SHOW_PHOTO_PIN << ", " << GAIN_PIN << std::endl;
 
     while (running) {
